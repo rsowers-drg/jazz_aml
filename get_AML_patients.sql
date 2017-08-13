@@ -14,6 +14,9 @@
 -->| ** Codes in sandbox.jazz_aml_diag_code_list
 -->| ############################################################
 
+--------------->Simon: change all references to Condor to: rwd.condor_<tablename>
+
+
 drop table if exists sandbox.jazz_condor_aml_patient_list;
 
 create table sandbox.jazz_condor_aml_patient_list as select 
@@ -37,6 +40,8 @@ from
 -->| ** Codes in sandbox.jazz_aml_diag_code_list
 -->| ############################################################
 
+--------------->Simon: change all references to Albatross to: rwd.albatross_<tablename>
+
 drop table if exists sandbox.jazz_albatross_aml_patient_list;
 
 create table sandbox.jazz_albatross_aml_patient_list as select
@@ -54,11 +59,15 @@ from
   upper(claims.diagnosiscode_7) = upper(codelist.diag_code) or
   upper(claims.diagnosiscode_8) = upper(codelist.diag_code))) as amlclaims;
 
+--------------->Simon: efficiency note: your queries may run long by asking for 8-10 possible joins. You can run them in 8-10 separate queries, and possibly limit to where the master table actually is populated in that field
 
 -->| ############################################################
 -->| ** VULTURE
 -->| ** Codes in sandbox.jazz_aml_diag_code_list
 -->| ############################################################
+
+--------------->Simon: change all references to Vuluture to: rwd.vulture_<tablename> (double check the latest emails from Dinesh or Andrew Newton; ask in the rwd_help channel)
+--------------->Simon: efficiency note: this will probably be fine, but you might consider breaking this up into two queries where you're not burying one in a subquery and joining to multiple tables in vulture. normalized structure is good, but the joins are huge.
 
 drop table if exists sandbox.jazz_vulture_aml_patient_list;
 
@@ -91,6 +100,13 @@ drop table if exists sandbox.jazz_albatross_aml_patient_list;
 -->| ** Get all identified patient claims
 -->| ############################################################
 
+--------------->Simon: i think you don't need to TRIM anymore
+--------------->Simon: you need to join your claims to the service table and grab the minimum service date. statement_from and admission_date are pretty much only present on institutional claims, which are a fraction of our repository
+--------------->Simon: i'd change the ordering in line 114 depending on what you want to do in general (1. skip referring npi and 2. be careful about using billing npi as a sub for doc...though it's definitely sometimes a person)
+--------------->Simon: i think you don't need npi's anyway
+--------------->Simon: also efficiency note, not sure if concat() and JOIN is faster than joining on two fields (patient_suffix and zip)
+
+
 drop table if exists sandbox.jazz_aml_condor_claims;
 
 create table sandbox.jazz_aml_condor_claims as select
@@ -121,7 +137,10 @@ create table sandbox.jazz_aml_condor_claims as select
 from rwd.claim_record as claims
 inner join sandbox.jazz_aml_patient_list_raw as patlist on
 (concat(trim(claims.patient_suffix), trim(claims.member_adr_zip)) = patlist.patient_id);
+--------------->Simon: if you're trying to keep procedures then you need the procedure_x column from the service table
 
+
+--------------->Simon: same as above: looks like you're using servicefromdate, which is correct (it's the equivalent of the service_from date in condor_service_record). createdate should never really be used as a service date. it can be more than 3 months after the service occurred. create date = date the claim was created in the system.
 drop table if exists sandbox.jazz_aml_albatross_claims;
 
 create table sandbox.jazz_aml_albatross_claims as select 
@@ -131,6 +150,7 @@ create table sandbox.jazz_aml_albatross_claims as select
      coalesce(claims.renderingprovidernpi,claims.billingprovnpi,claims.referringprovnpi) as npi,
      detail.StdChgLineHCPCSProcedureCode as procedure_1,
      detail.dmechglinehcpcsprocedurecode as procedure_2,
+--------------->Simon: you can skip the DME charge usually, but it's thorough to include
      claims.diagnosiscode_1,
      claims.diagnosiscode_2,
      claims.diagnosiscode_3,
@@ -144,6 +164,8 @@ inner join sandbox.jazz_aml_patient_list_raw as patlist on
 (concat(claims.patientsuffix, claims.patientzipcode) = patlist.patient_id)
 left join rwd.claims_detail as detail on
 (claims.entityid = detail.entityid);
+--------------->Simon: same, this is going to be a long query. i would do (1) claims header + patient list and then (2) use (1) and detail to get the service line and then (3) combine (1) and (2)
+
 
 drop table if exists sandbox.jazz_aml_vulture_claims;
 
@@ -151,6 +173,7 @@ create table sandbox.jazz_aml_vulture_claims as select
      claimlist.patient_id,
      claimlist.claimid as claim_number,
      try_to_date(coalesce(nullif(serv.servicestart, 'NULL'), nullif(serv.processdate, 'NULL'), nullif(claimlist.processdate, 'NULL'))) claim_date,
+--------------->Simon: same, you want servicestart and then failing that the header date. processdate is like create date (or recieved date in condor). it's rarely needed as a service date.	 
      nullif(upper(trim(diag.diagnosiscode)), 'null') as diagnosis_code_0,
      serv.drugcode as ndc,
      nullif(upper(trim(serv.procedurecode)), 'null') as procedure_1
@@ -159,12 +182,13 @@ from
  from sandbox.jazz_vulture_aml_patient_list as patlist
  inner join rwd.ability_vwpatient as claims on
  (patlist.patient_id = concat(coalesce(key1, key2, key3), trim(zip3)))
- where claims.claimid is not NULL and 
+  where claims.claimid is not NULL and 
        claims.processdate is not NULL and 
        patlist.patient_id is not NULL) as claimlist
 left join rwd.ability_vwdiagnosis as diag on (claimlist.claimid = diag.claimid)
 left join rwd.ability_vwserviceline as serv on (claimlist.claimid = serv.claimid);
-
+--------------->Simon: you probably don't want to join diagnosis and service line because you'll get number of records ~ (number of diagnoses) x (number of service line bills), and you haven't specified any relationship between Dx and Px (which isn't really necessary here anyway)
+--------------->Simon: if you're trying to get procedures, then you're missing ICD9/10 procedure codes. These are either in the header or in a procedures table.
 
 -->| ############################################################
 -->| ** Stack the claims
@@ -443,6 +467,7 @@ left join sandbox.jazz_aml_diag_code_list as codelist on
 (claims.code = codelist.diag_code)
 where claims.code is not NULL
 order by claims.patient_id, claims.claim_date, claims.claim_number;
+---------------->Simon: this may be a really long-running query. Consider breaking it up, e.g. union all first and then join the code list, or possibly keeping the code list data from an earlier step
 
 -->| ############################################################
 -->| ** Create the flagged patient list
@@ -458,6 +483,7 @@ create table sandbox.jazz_aml_flagged_pat_list as select
 
      count(distinct case when upper(code_type) = 'DIAG' then claim_number end) as dx_claim_count,
      count(distinct case when upper(code_type) = 'PROC' then claim_number end) as px_claim_count,
+------------>Simon: are you going to count what you want here? what happens in the first statement when the code_type <> diag? won't it still be counted	 
 
      (case when count(case when aml_group is not NULL then claim_number end)>0 then 1 end) as ml_any,
      min(case when aml_group is not NULL then claim_date end) as ml_any_init_date,
@@ -479,6 +505,8 @@ create table sandbox.jazz_aml_flagged_pat_list as select
      
      (case when count(case when aml_group = 'UNSPEC_ML' then claim_number end)>0 then 1 end) as unspec_ml,
      min(case when aml_group = 'UNSPEC_ML' then claim_date end) as unspec_ml_init_date
+------------->Simon: do you want these to be counts or sums? also, this is a bit tough to follow.
+------------->Simon: be careful about interpretation. This is giving you one record per patient with first DX date of AML, but it doesn't tell you the type at that date	 
 
 from sandbox.jazz_aml_full_claims_raw
 group by patient_id;
@@ -494,10 +522,10 @@ select
 from 
      (select 
      ((year(aml_any_init_date)*100)+month(aml_any_init_date)) as month,
+------------->Simon: these should be in date formats already	 
      patient_id
      from sandbox.jazz_aml_flagged_pat_list
      where aml_any = 1 and datediff(months,first_claim_date,aml_any_init_date)>=1) as list
 group by list.month
 order by list.month;
-
-
+------------->Simon: this doesn't include any kind of clean period. we could in principle do that after this step. would be good to see how sensitive our counts are to a 6-month, 1-year, and 2-year clean period.
